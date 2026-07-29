@@ -1,0 +1,11 @@
+[package]
+name = "device-service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+device-common = { workspace = true }
+anyhow = "1.0.102"
+tokio = { version = "1", default-features = false, features = ["net", "io-util", "rt", "time"] }
+tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }
+log = { version = "0.4" }
