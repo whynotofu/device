@@ -1,0 +1,12 @@
+[package]
+name = "device-common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"], optional = true }
+anyhow = "1.0.102"
+enum-iterator = "2.3.0"
+
+[features]
+clap = ["dep:clap"]
