@@ -96,14 +96,14 @@ impl Connection {
     }
 }
 
-pub struct KEventNetlinkSocket {
+pub struct NetlinkSocket {
     fd: ResourceID,
 }
 
-impl KEventNetlinkSocket {
+impl NetlinkSocket {
     pub fn new() -> Self {
         let fd = unsafe { socket(AF_NETLINK, SOCK_RAW, NETLINK_KOBJECT_UEVENT) };
-        wrappers_assert!(fd >= 0, "KEventNetlinkSocket::new {}", "socket");
+        wrappers_assert!(fd >= 0, "NetlinkSocket::new {}", "socket");
         let mut socket_addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
         socket_addr.nl_family = AF_NETLINK as sa_family_t;
         socket_addr.nl_pid = 0;
@@ -111,7 +111,7 @@ impl KEventNetlinkSocket {
         let addr_ptr = &socket_addr as *const sockaddr_nl as *const sockaddr;
         let addr_len = size_of::<sockaddr_nl>() as socklen_t;
         let res = unsafe { bind(fd, addr_ptr, addr_len) };
-        wrappers_assert!(res == 0, "KEventNetlinkSocket::new {}", "bind");
+        wrappers_assert!(res == 0, "NetlinkSocket::new {}", "bind");
         Self { fd }
     }
 

@@ -1,17 +1,20 @@
 use crate::{
     file_var::{FileVariable, Mode},
-    listeners::power_supply::PowerSupplyListener,
+    listeners::netlink::NetlinkListener,
     server::Server,
     stack_string::StackString,
     timer::Timer,
     wrappers::{File, FilePath, ResourceID},
 };
 use device_common::{BatteryProtection, BatteryStatus, Message, Percentage};
-use std::time::Duration;
+use std::{
+    ops::{Add, Sub},
+    time::Duration,
+};
 
 const BATTERY_DEVS: [&str; 3] = ["BAT0", "BAT1", "BATT"];
 
-type StatusString = StackString<16>;
+pub type StatusString = StackString<16>;
 
 pub struct BatteryModule {
     charge_file: FileVariable<u8>,
@@ -22,7 +25,7 @@ pub struct BatteryModule {
     start_threshold_file: Option<FileVariable<u8>>,
     end_threshold_file: Option<FileVariable<u8>>,
     drop_threshold: bool,
-    power_supply_listener: PowerSupplyListener,
+    netlink_listener: NetlinkListener,
     polling_interval: u8,
     poller: Timer,
 }
@@ -59,7 +62,7 @@ impl BatteryModule {
             start_threshold_file,
             end_threshold_file,
             drop_threshold,
-            power_supply_listener: PowerSupplyListener::new(),
+            netlink_listener: NetlinkListener::new(name.to_string()),
             polling_interval,
             poller: Timer::new(),
         };
@@ -83,7 +86,7 @@ impl BatteryModule {
     }
 
     pub fn get_netlink_fd(&self) -> ResourceID {
-        self.power_supply_listener.get_fd()
+        self.netlink_listener.get_fd()
     }
 
     pub fn get_charge(&self) -> Percentage {
@@ -115,7 +118,7 @@ impl BatteryModule {
                 end_threshold_file.set(&end_threshold);
             } else {
                 self.drop_threshold = true;
-                end_threshold_file.set(&start_threshold);
+                end_threshold_file.set(&start_threshold.sub(5));
             }
             self.start_millisecond_poller();
         }
@@ -135,12 +138,12 @@ impl BatteryModule {
             if self.drop_threshold {
                 if charge <= start_threshold {
                     self.drop_threshold = false;
-                    end_threshold_file.set(&end_threshold);
+                    end_threshold_file.set(&end_threshold.add(5).min(100));
                 }
             } else {
                 if charge >= end_threshold {
                     self.drop_threshold = true;
-                    end_threshold_file.set(&start_threshold);
+                    end_threshold_file.set(&start_threshold.sub(5));
                 }
             }
         }
@@ -154,8 +157,8 @@ impl BatteryModule {
         }
     }
 
-    pub fn on_power_supply_event(&mut self) {
-        if self.power_supply_listener.online_status_changed() {
+    pub fn on_netlink_event(&mut self) {
+        if self.netlink_listener.possible_battery_status_change() {
             self.start_millisecond_poller();
         }
     }

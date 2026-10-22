@@ -7,7 +7,7 @@ pub enum Event {
     Message(Connection),
     FileChange,
     BatteryPoll,
-    PowerSupply,
+    Netlink,
     KeyboardBacklightPoll,
     Signal,
 }

@@ -43,7 +43,7 @@ impl Device {
         }
 
         if let Some(battery) = &battery {
-            event_listener.add_event_source(battery.get_netlink_fd(), Event::PowerSupply);
+            event_listener.add_event_source(battery.get_netlink_fd(), Event::Netlink);
             event_listener.add_event_source(battery.get_timer_fd(), Event::BatteryPoll);
         }
 
@@ -174,9 +174,9 @@ impl Device {
         }
     }
 
-    pub fn on_power_supply_event(&mut self) {
+    pub fn on_netlinky_event(&mut self) {
         if let Some(battery) = &mut self.battery {
-            battery.on_power_supply_event();
+            battery.on_netlink_event();
         }
     }
 

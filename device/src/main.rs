@@ -46,7 +46,7 @@ fn main() {
             Event::Message(endpoint) => server.on_message(&mut event_listener, &mut device, endpoint),
             Event::FileChange => device.on_file_change(&server),
             Event::BatteryPoll => device.poll_battery(&server),
-            Event::PowerSupply => device.on_power_supply_event(),
+            Event::Netlink => device.on_netlinky_event(),
             Event::KeyboardBacklightPoll => device.poll_keyboard_backlight(&server),
             Event::Signal => {
                 running = process_signal(signal_fd);
