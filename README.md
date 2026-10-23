@@ -1,6 +1,6 @@
 # Device Daemon
 
-## Features
+### Features
 
 | Feature            | Get | Set | Subscribe | Persistence |
 | ------------------ | --- | --- | --------- | ----------- |
