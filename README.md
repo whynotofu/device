@@ -47,6 +47,17 @@ Example:
 intel_turbo = false
 ```
 
+## Install
+
+### Fedora
+
+```
+dnf copr enable whynotofu/device
+sudo dnf install device
+sudo systemctl enable device
+sudo systemctl start device
+```
+
 ## CLI
 
 `device-cli -h`
