@@ -19,7 +19,7 @@
 | On         | 75%             | 80%           |
 | Stationary | 40%             | 60%           |
 
-## Battery Start Threshold Emulation
+### Battery Start Threshold Emulation
 
 On devices that only expose end threshold - start threshold is emulated by lowering end threshold when upper limit is reached and raising it when lower limit is reached.
 
