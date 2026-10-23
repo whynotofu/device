@@ -101,19 +101,15 @@ impl NetlinkListener {
                 }
             }
         }
-        if let Some(action) = action
-            && action == Action::Change
-            && let Some(subsystem) = subsystem
-            && subsystem == SubSystem::PowerSupply
-            && let Some(devtype) = devtype
-            && devtype == DevType::PowerSupply
+        if action == Some(Action::Change)
+            && subsystem == Some(SubSystem::PowerSupply)
+            && devtype == Some(DevType::PowerSupply)
             && let Some(power_supply_type) = power_supply_type
+            && let Some(name) = power_supply_name
         {
             match power_supply_type {
                 PowerSupplyType::Mains => {
-                    if let Some(name) = power_supply_name
-                        && let Some(online) = power_supply_online
-                    {
+                    if let Some(online) = power_supply_online {
                         if let Some(power_supply) = self.power_supply_list.get_mut(name) {
                             if power_supply.online != online {
                                 power_supply.online = online;
@@ -126,9 +122,7 @@ impl NetlinkListener {
                     }
                 }
                 PowerSupplyType::Battery => {
-                    if let Some(name) = power_supply_name
-                        && name == self.battery_name
-                    {
+                    if name == self.battery_name {
                         possible_change = true;
                     }
                 }
