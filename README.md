@@ -1,6 +1,6 @@
 # Device Daemon
 
-## Feature Matrix
+## Features
 
 | Feature            | Get | Set | Subscribe | Persistence |
 | ------------------ | --- | --- | --------- | ----------- |
@@ -11,7 +11,7 @@
 | Keyboard Backlight | Y   | Y   | Y         | Y           |
 | Platform Profile   | Y   | Y   | Y         | Y           |
 
-## Battery Protection
+### Battery Protection
 
 | Mode       | Start Threshold | End Threshold |
 | ---------- | --------------- | ------------- |
@@ -24,6 +24,17 @@
 On devices that only expose end threshold - start threshold is emulated by lowering end threshold when upper limit is reached and raising it when lower limit is reached.
 
 Limitation: If upper or lower threshold is reached when suspended, firmware will keep topping up battery to that threshold.
+
+### API
+
+Rust api in device-service crate.
+
+### CLI
+
+```
+device-cli get -h
+device-cli set -h
+```
 
 ## Config
 
@@ -57,7 +68,3 @@ sudo dnf install device
 sudo systemctl enable device
 sudo systemctl start device
 ```
-
-## CLI
-
-`device-cli -h`
