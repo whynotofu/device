@@ -1,0 +1,13 @@
+[workspace]
+members = ["device", "device-common", "device-cli", "device-service"]
+resolver = "3"
+
+[workspace.dependencies]
+device-common = { path = "device-common" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

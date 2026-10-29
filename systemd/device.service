@@ -1,0 +1,10 @@
+[Unit]
+Description=Device Daemon
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/device
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
