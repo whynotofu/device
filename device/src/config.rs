@@ -1,37 +1,15 @@
-use serde::{Deserialize, Deserializer};
-use std::{fs, path::Path};
+use crate::{
+    file_var::FileVariable,
+    stack_string::StackString,
+    wrappers::{File, FilePath},
+};
 
 const CONFIG_FILE: &str = "/etc/device.toml";
 
-#[derive(Deserialize)]
-pub struct StaticConfig {
-    pub intel_turbo: Option<bool>,
-}
-
-#[derive(Deserialize)]
-#[serde(default)]
 pub struct Config {
-    keyboard_backlight: Option<String>,
-    #[serde(deserialize_with = "validate_battery_polling_interval")]
-    battery_polling_interval: u8,
-    static_config: Option<StaticConfig>,
-}
-
-fn validate_battery_polling_interval<'de, D>(deserializer: D) -> Result<u8, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = u8::deserialize(deserializer)?;
-    let options = [5, 10, 15, 20, 30, 60];
-
-    if options.contains(&value) {
-        Ok(value)
-    } else {
-        Err(serde::de::Error::custom(format!(
-            "Valid battery_polling_interval values are: {:?}; using default",
-            options
-        )))
-    }
+    pub keyboard_backlight: Option<String>,
+    pub battery_polling_interval: u8,
+    pub intel_turbo: Option<bool>,
 }
 
 impl Default for Config {
@@ -39,39 +17,72 @@ impl Default for Config {
         Self {
             keyboard_backlight: None,
             battery_polling_interval: 10,
-            static_config: None,
+            intel_turbo: None,
         }
     }
 }
 
 impl Config {
     pub fn init() -> Config {
-        let config_file = Path::new(CONFIG_FILE);
+        let config = Self::load_config();
 
-        if config_file.exists() {
-            match fs::read_to_string(config_file) {
-                Ok(content) => match toml::from_str::<Config>(&content) {
-                    Ok(config) => return config,
-                    Err(e) => {
-                        eprintln!("Failed to deserialize config: {}", e)
+        let intel_turbo_file = FilePath::from("/sys/devices/system/cpu/intel_pstate/no_turbo");
+
+        if let Some(intel_turbo) = config.intel_turbo
+            && File::exist(&intel_turbo_file)
+        {
+            FileVariable::<u8>::static_set(&intel_turbo_file, &(!intel_turbo as u8));
+        }
+
+        config
+    }
+
+    fn load_config() -> Config {
+        let config_file = FilePath::from(CONFIG_FILE);
+
+        if File::exist(&config_file) {
+            if File::size(&config_file) < 2048 {
+                let content = FileVariable::<StackString<2048>>::static_get(&config_file);
+
+                let mut config = Config::default();
+                for line in content.as_str().split('\n') {
+                    if let Some((key, value)) = line.split_once('=') {
+                        let key = key.trim();
+                        let value = value.trim();
+                        match key {
+                            "battery_polling_interval" => {
+                                let value = u8::from_str_radix(value, 10).unwrap_or_default();
+                                let options = [5, 10, 15, 20, 30, 60];
+
+                                if options.contains(&value) {
+                                    config.battery_polling_interval = value;
+                                } else {
+                                    eprintln!(
+                                        "WARN: Config: Valid battery_polling_interval values are: {:?}; using default",
+                                        options
+                                    );
+                                }
+                            }
+                            "keyboard_backlight" => {
+                                config.keyboard_backlight = Some(value.trim_matches('"').to_string());
+                            }
+                            "intel_turbo" => {
+                                config.intel_turbo = match value {
+                                    "true" => Some(true),
+                                    "false" => Some(false),
+                                    _ => None,
+                                };
+                            }
+                            _ => {}
+                        }
                     }
-                },
-                Err(e) => eprintln!("Failed to load config: {}", e),
-            };
+                }
+                return config;
+            } else {
+                eprintln!("ERROR: Config file too large");
+            }
         }
 
         Self::default()
-    }
-
-    pub fn get_keyboard_backlight(&self) -> Option<&String> {
-        self.keyboard_backlight.as_ref()
-    }
-
-    pub fn get_battery_polling_interval(&self) -> u8 {
-        self.battery_polling_interval
-    }
-
-    pub fn get_static_config(&self) -> Option<&StaticConfig> {
-        self.static_config.as_ref()
     }
 }

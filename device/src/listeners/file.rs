@@ -25,7 +25,7 @@ impl FileListener {
         self.inotify.get_fd()
     }
 
-    pub fn add_file(&mut self, file: &FilePath, tag: Tag) {
+    pub fn add(&mut self, file: &FilePath, tag: Tag) {
         self.map.insert(self.inotify.add_file(file), tag);
     }
 

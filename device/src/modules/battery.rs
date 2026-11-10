@@ -1,12 +1,15 @@
 use crate::{
+    config::Config,
+    device::Listeners,
     file_var::{FileVariable, Mode},
-    listeners::netlink::NetlinkListener,
+    listeners::event::Event,
     server::Server,
     stack_string::StackString,
+    state::State,
     timer::Timer,
-    wrappers::{File, FilePath, ResourceID},
+    wrappers::{File, FilePath},
 };
-use device_common::{BatteryProtection, BatteryStatus, Message, Percentage};
+use device_common::{BatteryProtection, BatteryStatus, Item, Percentage};
 use std::{
     ops::{Add, Sub},
     time::Duration,
@@ -25,23 +28,22 @@ pub struct BatteryModule {
     start_threshold_file: Option<FileVariable<u8>>,
     end_threshold_file: Option<FileVariable<u8>>,
     drop_threshold: bool,
-    netlink_listener: NetlinkListener,
     polling_interval: u8,
     poller: Timer,
 }
 
 impl BatteryModule {
-    pub const DEFAULT_DROP_THRESHOLD: bool = true;
-
-    pub fn new(polling_interval: u8, protection_mode: BatteryProtection, drop_threshold: bool) -> Option<BatteryModule> {
-        Self::find().map(|name| Self::init(name, polling_interval, protection_mode, drop_threshold))
+    pub fn new(config: &Config, state: &State, listeners: &mut Listeners) -> Option<BatteryModule> {
+        Self::find().map(|name| Self::init(name, config, state, listeners))
     }
 
-    fn init(name: &str, polling_interval: u8, protection_mode: BatteryProtection, drop_threshold: bool) -> BatteryModule {
+    fn init(name: &str, config: &Config, state: &State, listeners: &mut Listeners) -> BatteryModule {
         let charge_file = FileVariable::<u8>::new(&Self::charge_file(name), Mode::ReadOnly);
         let charge = charge_file.get();
         let status_file = FileVariable::<StatusString>::new(&Self::status_file(name), Mode::ReadOnly);
         let status = BatteryStatus::from(status_file.get());
+        let protection_mode = state.battery_protection.unwrap_or_default();
+        let drop_threshold = state.drop_threshold.unwrap_or(true);
         let start_threshold_file = if File::exist(&Self::start_threshold_file(name)) {
             Some(FileVariable::<u8>::new(&Self::start_threshold_file(name), Mode::ReadWrite))
         } else {
@@ -62,12 +64,13 @@ impl BatteryModule {
             start_threshold_file,
             end_threshold_file,
             drop_threshold,
-            netlink_listener: NetlinkListener::new(name.to_string()),
-            polling_interval,
+            polling_interval: config.battery_polling_interval,
             poller: Timer::new(),
         };
 
         battery.set_protection_mode(protection_mode);
+        listeners.netlink.set_battery_name(Some(name.to_string()));
+        listeners.event.add(battery.poller.get_fd(), Event::BatteryPoll);
         battery.start_default_poller();
         println!("Battery: {}", name);
         battery
@@ -77,20 +80,12 @@ impl BatteryModule {
         self.poller.set(Duration::from_secs(self.polling_interval as u64), None).start();
     }
 
-    fn start_millisecond_poller(&mut self) {
+    pub fn start_fast_poller(&mut self) {
         self.poller.set(Duration::from_millis(250), Some(10)).start();
     }
 
-    pub fn get_timer_fd(&self) -> ResourceID {
-        self.poller.get_fd()
-    }
-
-    pub fn get_netlink_fd(&self) -> ResourceID {
-        self.netlink_listener.get_fd()
-    }
-
     pub fn get_charge(&self) -> Percentage {
-        Percentage::from(self.charge)
+        Percentage::from(self.charge as f32)
     }
 
     pub fn get_status(&self) -> BatteryStatus {
@@ -120,7 +115,7 @@ impl BatteryModule {
                 self.drop_threshold = true;
                 end_threshold_file.set(&start_threshold.sub(5));
             }
-            self.start_millisecond_poller();
+            self.start_fast_poller();
         }
     }
 
@@ -149,17 +144,11 @@ impl BatteryModule {
         }
         if self.charge != charge {
             self.charge = charge;
-            server.broadcast(Message::BatteryCharge(Percentage::from(charge)));
+            server.broadcast(Item::BatteryCharge(Percentage::from(charge as f32)));
         }
         if self.status != status {
             self.status = status;
-            server.broadcast(Message::BatteryStatus(status));
-        }
-    }
-
-    pub fn on_netlink_event(&mut self) {
-        if self.netlink_listener.possible_battery_status_change() {
-            self.start_millisecond_poller();
+            server.broadcast(Item::BatteryStatus(status));
         }
     }
 

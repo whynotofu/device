@@ -4,20 +4,20 @@ use crate::{
     listeners::event::EventListener,
     wrappers::{Connection, File, FilePath, PathnameServer, ResourceID},
 };
-use device_common::{Get, Message, Request, SOCKET_PATH, Set, Signal};
+use device_common::{Get, Item, Request, Response, SOCKET_PATH, Set};
 
 pub const MAX_CLIENTS: usize = 10;
 
 pub struct Server {
     pathname_server: PathnameServer,
-    endpoints: Vec<Connection>,
+    monitors: Vec<Connection>,
 }
 
 impl Server {
     pub fn init() -> Self {
         Self {
             pathname_server: PathnameServer::new(&FilePath::from(SOCKET_PATH), MAX_CLIENTS),
-            endpoints: Vec::with_capacity(MAX_CLIENTS),
+            monitors: Vec::with_capacity(MAX_CLIENTS),
         }
     }
 
@@ -25,71 +25,79 @@ impl Server {
         self.pathname_server.get_fd()
     }
 
-    pub fn on_connection(&mut self, event_listener: &mut EventListener) {
+    pub fn on_connection(&mut self, device: &mut Device) {
         if let Some(endpoint) = self.pathname_server.accept_connection() {
-            if self.endpoints.len() < MAX_CLIENTS {
-                event_listener.add_event_source(endpoint.get_fd(), Event::Message(endpoint));
+            if self.monitors.len() < MAX_CLIENTS {
+                device.listeners.event.add(endpoint.get_fd(), Event::Message(endpoint));
             } else {
-                Self::send_response(endpoint, Message::Signal(Signal::MaxClients));
+                Self::send_response(endpoint, Response::MaxClients);
                 endpoint.close();
             }
         }
     }
 
-    pub fn on_message(&mut self, event_listener: &mut EventListener, device: &mut Device, endpoint: Connection) {
+    pub fn on_message(&mut self, device: &mut Device, endpoint: Connection) {
         if let Some(packet) = endpoint.receive() {
             match Request::try_from(packet) {
                 Ok(request) => match request {
-                    Request::Get(request) => self.get_request(device, endpoint, request),
+                    Request::Get(request) => Self::get_request(device, endpoint, request),
                     Request::Set(request) => self.set_request(device, request),
-                    Request::Subscribe => {
+                    Request::MonitorMode => {
+                        Self::send_response(endpoint, Response::Done);
                         if device.has_battery() {
-                            self.get_request(device, endpoint, Get::BatteryCharge);
-                            self.get_request(device, endpoint, Get::BatteryStatus);
+                            Self::send_item(device, endpoint, Get::BatteryCharge);
+                            Self::send_item(device, endpoint, Get::BatteryStatus);
                             if device.has_battery_protection() {
-                                self.get_request(device, endpoint, Get::BatteryProtection);
+                                Self::send_item(device, endpoint, Get::BatteryProtection);
                             }
                         }
                         if device.has_display_brightness() {
-                            self.get_request(device, endpoint, Get::DisplayBrightness);
+                            Self::send_item(device, endpoint, Get::DisplayBrightness);
                         }
                         if device.has_keyboard_backlight() {
-                            self.get_request(device, endpoint, Get::KeyboardBacklight);
+                            Self::send_item(device, endpoint, Get::KeyboardBacklight);
                         }
                         if device.has_platform_profile() {
-                            self.get_request(device, endpoint, Get::PlatformProfile);
-                            self.get_request(device, endpoint, Get::PlatformProfileChoices);
+                            Self::send_item(device, endpoint, Get::PlatformProfile);
+                            Self::send_item(device, endpoint, Get::PlatformProfileChoices);
                         }
-                        if !self.endpoints.contains(&endpoint) {
-                            self.endpoints.push(endpoint);
+                        if !self.monitors.contains(&endpoint) {
+                            self.monitors.push(endpoint);
                         }
-                        Self::send_response(endpoint, Message::Signal(Signal::Synced));
                     }
                 },
                 Err(e) => {
                     println!("Error while parsing request: {}", e);
-                    self.close_channel(event_listener, endpoint);
+                    self.close_channel(&mut device.listeners.event, endpoint);
                 }
             }
         } else {
-            self.close_channel(event_listener, endpoint);
+            self.close_channel(&mut device.listeners.event, endpoint);
         }
     }
 
-    fn get_request(&mut self, device: &mut Device, endpoint: Connection, request: Get) {
-        let response = match request {
-            Get::BatteryCharge => device.get_battery_charge().map(Message::BatteryCharge),
-            Get::BatteryStatus => device.get_battery_status().map(Message::BatteryStatus),
-            Get::BatteryProtection => device.get_battery_protection().map(Message::BatteryProtection),
-            Get::DisplayBrightness => device.get_display_brightness().map(Message::DisplayBrightness),
-            Get::KeyboardBacklight => device.get_keyboard_backlight().map(Message::KeyboardBacklight),
-            Get::PlatformProfileChoices => device.get_platform_profile_choices().map(Message::PlatformProfileChoices),
-            Get::PlatformProfile => device.get_platform_profile().map(Message::PlatformProfile),
-        };
-        match response {
-            Some(message) => Self::send_response(endpoint, message),
-            None => Self::send_response(endpoint, Message::Signal(Signal::Unavailable)),
+    fn get_item(device: &mut Device, get: Get) -> Option<Item> {
+        match get {
+            Get::BatteryCharge => device.get_battery_charge().map(Item::BatteryCharge),
+            Get::BatteryStatus => device.get_battery_status().map(Item::BatteryStatus),
+            Get::BatteryProtection => device.get_battery_protection().map(Item::BatteryProtection),
+            Get::DisplayBrightness => device.get_display_brightness().map(Item::DisplayBrightness),
+            Get::KeyboardBacklight => device.get_keyboard_backlight().map(Item::KeyboardBacklight),
+            Get::PlatformProfileChoices => device.get_platform_profile_choices().map(Item::PlatformProfileChoices),
+            Get::PlatformProfile => device.get_platform_profile().map(Item::PlatformProfile),
         }
+    }
+
+    fn get_request(device: &mut Device, endpoint: Connection, request: Get) {
+        if let Some(item) = Self::get_item(device, request) {
+            Self::send_response(endpoint, Response::Item(item));
+        } else {
+            Self::send_response(endpoint, Response::Unavailable);
+        }
+    }
+
+    fn send_response(endpoint: Connection, response: Response) {
+        endpoint.send(&response.to_packet());
     }
 
     fn set_request(&mut self, device: &mut Device, request: Set) {
@@ -97,7 +105,7 @@ impl Server {
             Set::BatteryProtection { protection } => {
                 if device.has_battery_protection() {
                     device.set_battery_protection(protection);
-                    self.broadcast(Message::BatteryProtection(protection));
+                    self.broadcast(Item::BatteryProtection(protection));
                 }
             }
             Set::DisplayBrightness { brightness } => device.set_display_brightness(brightness),
@@ -106,19 +114,21 @@ impl Server {
         }
     }
 
+    fn send_item(device: &mut Device, endpoint: Connection, item: Get) {
+        if let Some(item) = Self::get_item(device, item) {
+            endpoint.send(&item.to_packet());
+        }
+    }
+
     fn close_channel(&mut self, event_listener: &mut EventListener, endpoint: Connection) {
-        event_listener.remove_event_source(endpoint.get_fd());
-        self.endpoints.retain(|&e| e != endpoint);
+        event_listener.remove(endpoint.get_fd());
+        self.monitors.retain(|&e| e != endpoint);
         endpoint.close();
     }
 
-    pub fn broadcast(&self, message: Message) {
+    pub fn broadcast(&self, message: Item) {
         let packet = message.to_packet();
-        self.endpoints.iter().for_each(|&endpoint| endpoint.send(&packet));
-    }
-
-    fn send_response(endpoint: Connection, message: Message) {
-        endpoint.send(&message.to_packet());
+        self.monitors.iter().for_each(|&endpoint| endpoint.send(&packet));
     }
 }
 

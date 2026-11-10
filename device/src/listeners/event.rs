@@ -25,12 +25,12 @@ impl EventListener {
         }
     }
 
-    pub fn add_event_source(&mut self, fd: ResourceID, event: Event) {
+    pub fn add(&mut self, fd: ResourceID, event: Event) {
         self.epoll.control(EPollAction::Add, fd);
         self.map.insert(fd, event);
     }
 
-    pub fn remove_event_source(&mut self, fd: ResourceID) {
+    pub fn remove(&mut self, fd: ResourceID) {
         self.epoll.control(EPollAction::Remove, fd);
         self.map.remove(&fd);
     }

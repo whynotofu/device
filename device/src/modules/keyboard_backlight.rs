@@ -1,11 +1,14 @@
 use crate::{
+    config::Config,
+    device::Listeners,
     file_var::{FileVariable, Mode},
-    listeners::file::{FileListener, Tag},
+    listeners::{event::Event, file::Tag},
     server::Server,
+    state::State,
     timer::Timer,
-    wrappers::{File, FilePath, ResourceID},
+    wrappers::{File, FilePath},
 };
-use device_common::{KeyboardBacklight, Message};
+use device_common::{Item, KeyboardBacklight, UNum};
 use std::{fs, path::Path, time::Duration};
 
 pub struct KeyboardBacklightModule {
@@ -16,44 +19,42 @@ pub struct KeyboardBacklightModule {
 }
 
 impl KeyboardBacklightModule {
-    pub fn new(
-        name: Option<&String>,
-        brightness: KeyboardBacklight,
-        file_listener: &mut FileListener,
-    ) -> Option<KeyboardBacklightModule> {
-        if let Some(name) = name {
+    pub fn new(config: &Config, state: &State, listeners: &mut Listeners) -> Option<KeyboardBacklightModule> {
+        if let Some(name) = &config.keyboard_backlight {
             let name = name.as_str();
             if Self::is_valid(name) {
-                Some(Self::init(name, brightness, file_listener))
+                Some(Self::init(name, state, listeners))
             } else {
                 println!("Warning: Unable to use keyboard backlight device specified in config");
                 None
             }
         } else {
-            Self::find().map(|name| Self::init(name.as_str(), brightness, file_listener))
+            Self::find().map(|name| Self::init(name.as_str(), state, listeners))
         }
     }
 
-    fn init(name: &str, brightness: KeyboardBacklight, file_listener: &mut FileListener) -> KeyboardBacklightModule {
+    fn init(name: &str, state: &State, listeners: &mut Listeners) -> KeyboardBacklightModule {
+        let brightness_file = FileVariable::<u32>::new(&Self::brightness_file(name), Mode::ReadWrite);
+        let step = (FileVariable::<u32>::static_get(&Self::max_brightness_file(name)) + 1) / 4;
+        let brightness = KeyboardBacklight::from((brightness_file.get() / step) as UNum);
+        let poller = Timer::new();
         let mut keyboard_backlight = KeyboardBacklightModule {
-            brightness_file: FileVariable::<u32>::new(&Self::brightness_file(name), Mode::ReadWrite),
-            step: (FileVariable::<u32>::static_get(&Self::max_brightness_file(name)) + 1) / 4,
+            brightness_file,
+            step,
             brightness,
-            poller: Timer::new(),
+            poller,
         };
-
-        keyboard_backlight.set_brightness(brightness);
-        keyboard_backlight.poller.set(Duration::from_millis(50), Some(10));
-        file_listener.add_file(&Self::brightness_file(name), Tag::KeyboardBacklight);
-        if File::exist(&Self::brightness_hw_changed_file(name)) {
-            file_listener.add_file(&Self::brightness_hw_changed_file(name), Tag::KeyboardBacklight);
+        if let Some(brightness) = state.keyboard_backlight {
+            keyboard_backlight.set_brightness(brightness);
         }
+        keyboard_backlight.poller.set(Duration::from_millis(50), Some(10));
+        listeners.file.add(&Self::brightness_file(name), Tag::KeyboardBacklight);
+        if File::exist(&Self::brightness_hw_changed_file(name)) {
+            listeners.file.add(&Self::brightness_hw_changed_file(name), Tag::KeyboardBacklight);
+        }
+        listeners.event.add(keyboard_backlight.poller.get_fd(), Event::KeyboardBacklightPoll);
         println!("Keyboard Backlight: {}", name);
         keyboard_backlight
-    }
-
-    pub fn get_timer_fd(&self) -> ResourceID {
-        self.poller.get_fd()
     }
 
     pub fn get_brightness(&self) -> KeyboardBacklight {
@@ -70,11 +71,11 @@ impl KeyboardBacklightModule {
 
     pub fn poll(&mut self, server: &Server) {
         self.poller.update();
-        let brightness = KeyboardBacklight::from((self.brightness_file.get() / self.step) as u8);
+        let brightness = KeyboardBacklight::from((self.brightness_file.get() / self.step) as UNum);
         if self.brightness != brightness {
             self.poller.stop();
             self.brightness = brightness;
-            server.broadcast(Message::KeyboardBacklight(brightness));
+            server.broadcast(Item::KeyboardBacklight(brightness));
         }
     }
 

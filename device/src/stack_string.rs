@@ -8,12 +8,16 @@ impl<const N: usize> StackString<N> {
     }
 
     pub fn add(mut self, s: &str) -> Self {
+        self.write(s);
+        self
+    }
+
+    pub fn write(&mut self, s: &str) {
         let source = s.as_bytes();
         let len = self.len();
         let new_len = len + source.len();
         assert!(new_len < N, "StackString<{}> capacity exceeded", N);
         self.bytes[len..new_len].copy_from_slice(source);
-        self
     }
 
     pub fn len(&self) -> usize {

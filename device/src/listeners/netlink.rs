@@ -1,8 +1,9 @@
-use crate::wrappers::{NetlinkSocket, ResourceID};
-use std::{
-    collections::HashMap,
-    {fs, path::Path},
+use crate::{
+    file_var::{FileVariable, Mode},
+    stack_string::StackString,
+    wrappers::{Directory, File, FilePath, NetlinkSocket, ResourceID},
 };
+use std::collections::HashMap;
 
 pub struct PowerSupply {
     online: bool,
@@ -10,51 +11,43 @@ pub struct PowerSupply {
 
 pub struct NetlinkListener {
     netlink: NetlinkSocket,
-    battery_name: String,
+    battery_name: Option<String>,
     power_supply_list: HashMap<String, PowerSupply>,
 }
 
 impl NetlinkListener {
-    pub fn new(battery_name: String) -> Self {
+    pub fn new() -> Self {
         Self {
             netlink: NetlinkSocket::new(),
-            battery_name,
+            battery_name: None,
             power_supply_list: Self::find_power_supplies(),
         }
     }
 
     fn find_power_supplies() -> HashMap<String, PowerSupply> {
         let mut list = HashMap::new();
-        let dir = Path::new("/sys/class/power_supply");
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let mut path = entry.path();
-                if path.is_dir()
-                    && let Some(name) = path.file_name().map(|os_str| os_str.to_string_lossy().into_owned())
+        let path = "/sys/class/power_supply";
+        let directory = Directory::open(path);
+        while let Some(name) = directory.get_entry() {
+            let type_file = FilePath::from(path).add("/").add(name).add("/").add("type");
+            if File::is_file(&type_file) {
+                let power_supply_type = FileVariable::<StackString<16>>::new(&type_file, Mode::ReadOnly).get();
+                let power_supply_type = power_supply_type.trim_end().into_lowercase();
+                if ["mains", "usb", "usb_c", "usb_pd", "usb_pd_drp", "usb_dcp", "usb_aca"].contains(&power_supply_type.as_str())
                 {
-                    path.push("type");
-                    if path.is_file()
-                        && let Ok(power_supply_type) = fs::read_to_string(&path)
-                        && ["mains", "usb", "usb_c", "usb_pd", "usb_pd_drp", "usb_dcp", "usb_aca"]
-                            .contains(&power_supply_type.trim_end().to_ascii_lowercase().as_str())
-                    {
-                        path.pop();
-                        path.push("online");
-                        if path.is_file()
-                            && let Ok(online) = fs::read_to_string(&path)
-                        {
-                            list.insert(
-                                name.to_string(),
-                                PowerSupply {
-                                    online: online.trim_end() == "1",
-                                },
-                            );
-                        }
+                    let online_file = FilePath::from(path).add("/").add(name).add("/").add("online");
+                    if File::is_file(&online_file) {
+                        let online = FileVariable::<u8>::new(&online_file, Mode::ReadOnly).get() == 1;
+                        list.insert(name.to_string(), PowerSupply { online: online });
                     }
                 }
             }
         }
         list
+    }
+
+    pub fn set_battery_name(&mut self, battery_name: Option<String>) {
+        self.battery_name = battery_name;
     }
 
     pub fn possible_battery_status_change(&mut self) -> bool {
@@ -122,7 +115,9 @@ impl NetlinkListener {
                     }
                 }
                 PowerSupplyType::Battery => {
-                    if name == self.battery_name {
+                    if let Some(battery_name) = &self.battery_name
+                        && name == battery_name
+                    {
                         possible_change = true;
                     }
                 }

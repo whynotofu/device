@@ -1,6 +1,8 @@
 use crate::{
+    device::Listeners,
     file_var::{FileVariable, Mode},
-    listeners::file::{FileListener, Tag},
+    listeners::file::Tag,
+    state::State,
     wrappers::{File, FilePath},
 };
 use device_common::Percentage;
@@ -9,44 +11,37 @@ const BRIGHTNESS_DEVS: [&str; 4] = ["intel_backlight", "dp_aux_backlight", "amdg
 
 pub struct DisplayBrightnessModule {
     brightness_file: FileVariable<u32>,
-    step: u32,
+    max_brightness: u32,
 }
 
 impl DisplayBrightnessModule {
-    pub const DEFAULT_DISPLAY_BRIGHTNESS: u8 = 50;
-
-    pub fn new(brightness: Percentage, file_listener: &mut FileListener) -> Option<DisplayBrightnessModule> {
-        Self::find().map(|name| Self::init(name, brightness, file_listener))
+    pub fn new(state: &State, listeners: &mut Listeners) -> Option<DisplayBrightnessModule> {
+        Self::find().map(|name| Self::init(name, state, listeners))
     }
 
-    fn init(name: &str, brightness: Percentage, file_listener: &mut FileListener) -> DisplayBrightnessModule {
+    fn init(name: &str, state: &State, listeners: &mut Listeners) -> DisplayBrightnessModule {
         let mut display_brightness = DisplayBrightnessModule {
             brightness_file: FileVariable::<u32>::new(&Self::brightness_file(name), Mode::ReadWrite),
-            step: FileVariable::<u32>::static_get(&Self::max_brightness_file(name)) / 100,
+            max_brightness: FileVariable::<u32>::static_get(&Self::max_brightness_file(name)),
         };
-
-        display_brightness.set_brightness(brightness);
-        file_listener.add_file(&Self::brightness_file(name), Tag::DisplayBrightness);
+        if let Some(brightness) = state.display_brightness {
+            display_brightness.set_brightness(brightness);
+        }
+        listeners.file.add(&Self::brightness_file(name), Tag::DisplayBrightness);
         println!("Display Brightness: {}", name);
         display_brightness
     }
 
     pub fn get_brightness(&self) -> Percentage {
-        Percentage::from((self.brightness_file.get() / self.step) as u8)
+        Percentage::from(((self.brightness_file.get() as f32) / (self.max_brightness as f32)) * 100.0)
     }
 
     pub fn set_brightness(&mut self, brightness: Percentage) {
-        self.brightness_file.set(&((brightness.value() as u32) * self.step));
+        self.brightness_file.set(&(((self.max_brightness as f32) * brightness.normalized()) as u32));
     }
 
     fn is_valid(name: &str) -> bool {
-        File::exist(&Self::brightness_file(name))
-            && File::exist(&Self::max_brightness_file(name))
-            && Self::is_max_brightness_valid(FileVariable::<u32>::static_get(&Self::max_brightness_file(name)))
-    }
-
-    fn is_max_brightness_valid(n: u32) -> bool {
-        n.is_multiple_of(100)
+        File::exist(&Self::brightness_file(name)) && File::exist(&Self::max_brightness_file(name))
     }
 
     fn find() -> Option<&'static str> {

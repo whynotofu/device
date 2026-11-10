@@ -1,8 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 pub use device_common::{
-    BatteryProtection, BatteryStatus, KeyboardBacklight, Percentage, PlatformProfile, PlatformProfileChoices, Signal,
+    BatteryProtection, BatteryStatus, KeyboardBacklight, Percentage, PlatformProfile, PlatformProfileChoices,
 };
-use device_common::{Packet, SOCKET_PATH, Set};
+use device_common::{Item, Packet, Request, Response, SOCKET_PATH, Set};
 use log::warn;
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -24,13 +24,11 @@ pub struct DeviceService {
     writer: Option<Arc<Mutex<OwnedWriteHalf>>>,
 }
 
-type Update = device_common::Message;
-
 #[derive(Debug, Clone)]
 pub enum Message {
-    Update(Update),
+    Set(Item),
     SetWriter(Arc<Mutex<OwnedWriteHalf>>),
-    Reset,
+    Void,
 }
 
 impl DeviceService {
@@ -86,7 +84,7 @@ impl DeviceService {
         if let Some(writer) = self.writer.clone() {
             tokio::spawn(async move {
                 if let Err(e) = writer.lock().await.write_all(&set.to_packet()).await {
-                    warn!("DeviceService.set_request: {}", e);
+                    warn!("set_request: {}", e);
                 }
             });
         }
@@ -94,28 +92,27 @@ impl DeviceService {
 
     pub fn update(&mut self, message: Message) {
         match message {
-            Message::Update(update) => match update {
-                Update::BatteryCharge(charge) => self.battery_charge = Some(charge),
-                Update::BatteryStatus(status) => self.battery_status = Some(status),
-                Update::BatteryProtection(protection) => {
+            Message::Set(item) => match item {
+                Item::BatteryCharge(charge) => self.battery_charge = Some(charge),
+                Item::BatteryStatus(status) => self.battery_status = Some(status),
+                Item::BatteryProtection(protection) => {
                     self.battery_protection = Some(protection);
                 }
-                Update::DisplayBrightness(brightness) => {
+                Item::DisplayBrightness(brightness) => {
                     self.display_brightness = Some(brightness);
                 }
-                Update::KeyboardBacklight(backlight) => {
+                Item::KeyboardBacklight(backlight) => {
                     self.keyboard_backlight = Some(backlight);
                 }
-                Update::PlatformProfile(profile) => {
+                Item::PlatformProfile(profile) => {
                     self.platform_profile = Some(profile);
                 }
-                Update::PlatformProfileChoices(choices) => {
+                Item::PlatformProfileChoices(choices) => {
                     self.platform_profile_choices = Some(choices);
                 }
-                Update::Signal(signal) => warn!("{}", signal.as_str()),
             },
             Message::SetWriter(writer) => self.writer = Some(writer),
-            Message::Reset => {
+            Message::Void => {
                 self.battery_charge = None;
                 self.battery_status = None;
                 self.battery_protection = None;
@@ -139,9 +136,9 @@ impl DeviceService {
 
             loop {
                 if let Err(e) = Self::feed(&mut output, &mut attempt).await {
-                    warn!("DeviceService: {}", e);
+                    warn!("{}", e);
                 }
-                output.send(Message::Reset).await.expect("Failed to reset");
+                output.send(Message::Void).await.expect("Failed to reset");
 
                 if attempt <= intervals.len() {
                     tokio::time::sleep(Duration::from_secs(intervals[attempt - 1] as u64)).await;
@@ -161,26 +158,33 @@ impl DeviceService {
         };
 
         let (mut reader, mut writer) = stream.into_split();
-        let mut packet = Packet::default();
 
-        writer.write_all(&[255, 255]).await.context("socket closed")?;
+        writer.write_all(&Request::MonitorMode.to_packet()).await.context("Socket closed")?;
 
         let writer = Arc::new(Mutex::new(writer));
 
-        loop {
-            reader.read_exact(&mut packet).await.context("socket closed")?;
+        let mut packet = Packet::default();
 
-            match Update::try_from(packet) {
-                Ok(update) => {
-                    if update == Update::Signal(Signal::Synced) {
-                        output.send(Message::SetWriter(Arc::clone(&writer))).await?;
-                        *atempt = 1;
-                    } else {
-                        output.send(Message::Update(update)).await?;
+        reader.read_exact(&mut packet).await.context("Socket closed")?;
+
+        match Response::try_from(packet) {
+            Ok(response) => match response {
+                Response::Done => {
+                    output.send(Message::SetWriter(Arc::clone(&writer))).await?;
+                    *atempt = 1;
+
+                    loop {
+                        reader.read_exact(&mut packet).await.context("Socket closed")?;
+
+                        match Item::try_from(packet) {
+                            Ok(item) => output.send(Message::Set(item)).await?,
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
-                Err(e) => return Err(e),
-            }
+                _ => return Err(anyhow!(response.to_string())),
+            },
+            Err(e) => return Err(e),
         }
     }
 }

@@ -3,6 +3,7 @@ use crate::{
     listeners::{
         event::{Event, EventListener},
         file::{FileListener, Tag},
+        netlink::NetlinkListener,
     },
     modules::{
         battery::BatteryModule, display_brightness::DisplayBrightnessModule, keyboard_backlight::KeyboardBacklightModule,
@@ -12,53 +13,50 @@ use crate::{
     state::State,
 };
 use device_common::{
-    BatteryProtection, BatteryStatus, KeyboardBacklight, Message, Percentage, PlatformProfile, PlatformProfileChoices,
+    BatteryProtection, BatteryStatus, Item, KeyboardBacklight, Percentage, PlatformProfile, PlatformProfileChoices,
 };
+
+pub struct Listeners {
+    pub event: EventListener,
+    pub file: FileListener,
+    pub netlink: NetlinkListener,
+}
 
 pub struct Device {
     battery: Option<BatteryModule>,
     display_brightness: Option<DisplayBrightnessModule>,
     keyboard_backlight: Option<KeyboardBacklightModule>,
     platform_profile: Option<PlatformProfileModule>,
-    file_listener: FileListener,
+    pub listeners: Listeners,
 }
 
 impl Device {
-    pub fn init(config: &Config, event_listener: &mut EventListener, state: &State) -> Self {
-        let mut file_listener = FileListener::init(4);
+    pub fn init(config: &Config, state: &State) -> Self {
+        let mut listeners = Listeners {
+            event: EventListener::init(32),
+            file: FileListener::init(4),
+            netlink: NetlinkListener::new(),
+        };
 
-        let battery = BatteryModule::new(
-            config.get_battery_polling_interval(),
-            state.battery_protection,
-            state.drop_threshold,
-        );
-        let display_brightness = DisplayBrightnessModule::new(state.display_brightness, &mut file_listener);
-        let keyboard_backlight =
-            KeyboardBacklightModule::new(config.get_keyboard_backlight(), state.keyboard_backlight, &mut file_listener);
-        let platform_profile = PlatformProfileModule::new(state.platform_profile, &mut file_listener);
+        let battery = BatteryModule::new(config, state, &mut listeners);
+        let display_brightness = DisplayBrightnessModule::new(state, &mut listeners);
+        let keyboard_backlight = KeyboardBacklightModule::new(config, state, &mut listeners);
+        let platform_profile = PlatformProfileModule::new(state, &mut listeners);
 
         if battery.is_none() && display_brightness.is_none() && keyboard_backlight.is_none() && platform_profile.is_none() {
             eprintln!("No modules initialized!");
             std::process::exit(0);
         }
 
-        if let Some(battery) = &battery {
-            event_listener.add_event_source(battery.get_netlink_fd(), Event::Netlink);
-            event_listener.add_event_source(battery.get_timer_fd(), Event::BatteryPoll);
-        }
-
-        if let Some(keyboard_backlight) = &keyboard_backlight {
-            event_listener.add_event_source(keyboard_backlight.get_timer_fd(), Event::KeyboardBacklightPoll);
-        }
-
-        event_listener.add_event_source(file_listener.get_fd(), Event::FileChange);
+        listeners.event.add(listeners.file.get_fd(), Event::FileChange);
+        listeners.event.add(listeners.netlink.get_fd(), Event::Netlink);
 
         Self {
             battery,
             display_brightness,
             keyboard_backlight,
             platform_profile,
-            file_listener,
+            listeners,
         }
     }
 
@@ -147,11 +145,11 @@ impl Device {
     }
 
     pub fn on_file_change(&mut self, server: &Server) {
-        if let Some(tag) = self.file_listener.get_tag() {
+        if let Some(tag) = self.listeners.file.get_tag() {
             match tag {
                 Tag::DisplayBrightness => {
                     if let Some(display_brightness) = &mut self.display_brightness {
-                        server.broadcast(Message::DisplayBrightness(display_brightness.get_brightness()));
+                        server.broadcast(Item::DisplayBrightness(display_brightness.get_brightness()));
                     }
                 }
                 Tag::KeyboardBacklight => {
@@ -161,7 +159,7 @@ impl Device {
                 }
                 Tag::PlatformProfile => {
                     if let Some(platform_profile) = &mut self.platform_profile {
-                        server.broadcast(Message::PlatformProfile(platform_profile.get_profile()));
+                        server.broadcast(Item::PlatformProfile(platform_profile.get_profile()));
                     }
                 }
             };
@@ -174,9 +172,11 @@ impl Device {
         }
     }
 
-    pub fn on_netlinky_event(&mut self) {
-        if let Some(battery) = &mut self.battery {
-            battery.on_netlink_event();
+    pub fn on_netlink_event(&mut self) {
+        if self.listeners.netlink.possible_battery_status_change()
+            && let Some(battery) = &mut self.battery
+        {
+            battery.start_fast_poller();
         }
     }
 
@@ -187,28 +187,12 @@ impl Device {
     }
 
     pub fn get_state(&self) -> State {
-        let (battery_protection, drop_threshold) = match &self.battery {
-            Some(battery) => (battery.get_protection_mode(), battery.get_drop_threshold()),
-            None => (BatteryProtection::default(), BatteryModule::DEFAULT_DROP_THRESHOLD),
-        };
-        let display_brightness = match &self.display_brightness {
-            Some(display_brightness) => display_brightness.get_brightness(),
-            None => Percentage::from(DisplayBrightnessModule::DEFAULT_DISPLAY_BRIGHTNESS),
-        };
-        let keyboard_backlight = match &self.keyboard_backlight {
-            Some(keyboard_backlight) => keyboard_backlight.get_brightness(),
-            None => KeyboardBacklight::default(),
-        };
-        let platform_profile = match &self.platform_profile {
-            Some(platform_profile) => platform_profile.get_profile(),
-            None => PlatformProfile::default(),
-        };
         State {
-            battery_protection,
-            drop_threshold,
-            display_brightness,
-            keyboard_backlight,
-            platform_profile,
+            battery_protection: self.battery.as_ref().map(|battery| battery.get_protection_mode()),
+            drop_threshold: self.battery.as_ref().map(|battery| battery.get_drop_threshold()),
+            display_brightness: self.display_brightness.as_ref().map(|display_brightness| display_brightness.get_brightness()),
+            keyboard_backlight: self.keyboard_backlight.as_ref().map(|keyboard_backlight| keyboard_backlight.get_brightness()),
+            platform_profile: self.platform_profile.as_ref().map(|platform_profile| platform_profile.get_profile()),
         }
     }
 }

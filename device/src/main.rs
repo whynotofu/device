@@ -4,7 +4,7 @@ compile_error!("This program only supports Linux");
 use crate::{
     config::Config,
     device::Device,
-    listeners::event::{Event, EventListener},
+    listeners::event::Event,
     server::Server,
     state::StateManager,
     wrappers::{process_signal, running_as_root, setup_signal_handler},
@@ -29,24 +29,22 @@ fn main() {
 
     let state_manager = StateManager::init();
     let config = Config::init();
-    config.get_static_config().map(StateManager::apply_static_config);
-    let mut event_listener = EventListener::init(32);
-    let mut device = Device::init(&config, &mut event_listener, &state_manager.get_state_on_file());
+    let mut device = Device::init(&config, &state_manager.get_state_on_file());
     let mut server = Server::init();
     let signal_fd = setup_signal_handler();
 
-    event_listener.add_event_source(server.get_fd(), Event::Connection);
-    event_listener.add_event_source(signal_fd, Event::Signal);
+    device.listeners.event.add(server.get_fd(), Event::Connection);
+    device.listeners.event.add(signal_fd, Event::Signal);
 
     let mut running = true;
 
     while running {
-        match event_listener.event() {
-            Event::Connection => server.on_connection(&mut event_listener),
-            Event::Message(endpoint) => server.on_message(&mut event_listener, &mut device, endpoint),
+        match device.listeners.event.event() {
+            Event::Connection => server.on_connection(&mut device),
+            Event::Message(endpoint) => server.on_message(&mut device, endpoint),
             Event::FileChange => device.on_file_change(&server),
             Event::BatteryPoll => device.poll_battery(&server),
-            Event::Netlink => device.on_netlinky_event(),
+            Event::Netlink => device.on_netlink_event(),
             Event::KeyboardBacklightPoll => device.poll_keyboard_backlight(&server),
             Event::Signal => {
                 running = process_signal(signal_fd);

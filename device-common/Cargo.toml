@@ -1,7 +1,8 @@
 [package]
 name = "device-common"
-version = "0.2.0"
-edition = "2024"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"], optional = true }

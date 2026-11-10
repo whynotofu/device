@@ -1,11 +1,11 @@
 Name: device
-Version: 0.2.0
+Version: 0.4.0
 Release: 1%{?dist}
 Summary: Battery, Display Brightness, Keyboard Backlight and Platform Profile Daemon
 
 License: GPL-3.0-or-later
 URL: https://github.com/whynotofu/device
-Source0: %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
+Source0: %{url}/archive/%{version}/%{name}-%{version}.tar.gz
 
 BuildRequires: cargo
 BuildRequires: rust-packaging >= 21
@@ -46,6 +46,7 @@ install -D -m 0644 systemd/device.service %{buildroot}%{_unitdir}/device.service
 %{_unitdir}/device.service
 
 %changelog
+* Tue Nov 10 2026 Steven <278405169+whynotofu@users.noreply.github.com> - 0.4.0-1
 * Wed Oct 28 2026 Steven <278405169+whynotofu@users.noreply.github.com> - 0.2.0-1
 * Fri Jul 24 2026 Steven <278405169+whynotofu@users.noreply.github.com> - 0.1.0-1
 - initial release

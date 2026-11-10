@@ -1,10 +1,12 @@
 use crate::{
+    device::Listeners,
     file_var::{FileVariable, Mode},
-    listeners::file::{FileListener, Tag},
+    listeners::file::Tag,
     stack_string::StackString,
+    state::State,
     wrappers::{File, FilePath},
 };
-use device_common::{PlatformProfile, PlatformProfileChoices};
+use device_common::{PlatformProfile, PlatformProfileChoices, UNum};
 
 type ProfileString = StackString<16>;
 type ProfileChoicesString = StackString<128>;
@@ -15,7 +17,7 @@ pub struct PlatformProfileModule {
 }
 
 impl PlatformProfileModule {
-    pub fn new(profile: PlatformProfile, file_listener: &mut FileListener) -> Option<PlatformProfileModule> {
+    pub fn new(state: &State, listeners: &mut Listeners) -> Option<PlatformProfileModule> {
         let profile_file = Self::profile_file();
         let profile_choices_file = Self::profile_choices_file();
         if File::exist(&profile_file) && File::exist(&profile_choices_file) {
@@ -30,9 +32,10 @@ impl PlatformProfileModule {
                 profile_file: FileVariable::<ProfileString>::new(&profile_file, Mode::ReadWrite),
                 profile_choices,
             };
-
-            platform_profile.set_profile(profile);
-            file_listener.add_file(&profile_file, Tag::PlatformProfile);
+            if let Some(profile) = state.platform_profile {
+                platform_profile.set_profile(profile);
+            }
+            listeners.file.add(&profile_file, Tag::PlatformProfile);
             Some(platform_profile)
         } else {
             None
@@ -84,9 +87,9 @@ impl From<&ProfileString> for PlatformProfile {
 
 impl From<&ProfileChoicesString> for PlatformProfileChoices {
     fn from(choices: &ProfileChoicesString) -> Self {
-        let mut list = 0u8;
+        let mut list = 0 as UNum;
         for choice in choices.as_str().split(" ") {
-            list |= 1u8 << PlatformProfile::from(&ProfileString::from(choice)).index();
+            list |= (1 as UNum) << PlatformProfile::from(&ProfileString::from(choice)).index();
         }
         Self::from(list)
     }

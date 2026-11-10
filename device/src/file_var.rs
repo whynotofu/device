@@ -39,6 +39,7 @@ impl<T: ToAndFromFile> FileVariable<T> {
     pub fn set(&self, value: &T) {
         if self.mode != Mode::ReadOnly {
             self.file.seek(0);
+            self.file.trim(0);
             T::to_file(&self.file, value);
         }
     }

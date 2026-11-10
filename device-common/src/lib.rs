@@ -2,16 +2,26 @@ use anyhow::{Error, Ok, Result, anyhow};
 #[cfg(feature = "clap")]
 use clap::{Subcommand, ValueEnum};
 use enum_iterator::{Sequence, all};
-#[cfg(feature = "clap")]
-use std::str::FromStr;
 use std::{
     fmt,
     ops::{Add, Sub},
+    str::FromStr,
 };
 
 pub const SOCKET_PATH: &str = "/tmp/device.sock";
 
-pub type Packet = [u8; 2];
+pub type UNum = u16;
+
+pub type Packet = [u8; 4];
+
+fn get_packet_value(packet: Packet) -> UNum {
+    UNum::from_le_bytes([packet[2], packet[3]])
+}
+
+fn pack(p_type: u8, code: u8, value: UNum) -> Packet {
+    let value = value.to_le_bytes();
+    [p_type, code, value[0], value[1]]
+}
 
 #[derive(Copy, Clone)]
 #[cfg_attr(feature = "clap", derive(Subcommand))]
@@ -21,21 +31,28 @@ pub enum Request {
     #[cfg_attr(feature = "clap", command(subcommand))]
     Set(Set),
     #[cfg_attr(feature = "clap", command(skip))]
-    Subscribe,
+    MonitorMode,
 }
 
 impl TryFrom<Packet> for Request {
     type Error = Error;
 
-    fn try_from(bytes: Packet) -> Result<Self, Self::Error> {
-        if bytes[0] < 255 {
-            Set::try_from(bytes).map(Request::Set)
-        } else {
-            if bytes[1] < 255 {
-                Get::try_from(bytes).map(Request::Get)
-            } else {
-                Ok(Request::Subscribe)
-            }
+    fn try_from(packet: Packet) -> Result<Self, Self::Error> {
+        match packet[0] {
+            1 => Get::try_from(packet).map(Request::Get),
+            2 => Set::try_from(packet).map(Request::Set),
+            3 => Ok(Request::MonitorMode),
+            _ => Err(anyhow!("Unknown request code")),
+        }
+    }
+}
+
+impl Request {
+    pub fn to_packet(&self) -> Packet {
+        match self {
+            Request::Get(get) => get.to_packet(),
+            Request::Set(set) => set.to_packet(),
+            Request::MonitorMode => pack(3, 0, 0),
         }
     }
 }
@@ -55,8 +72,8 @@ pub enum Get {
 impl TryFrom<Packet> for Get {
     type Error = Error;
 
-    fn try_from(bytes: Packet) -> Result<Self, Self::Error> {
-        match bytes[1] {
+    fn try_from(packet: Packet) -> Result<Self, Self::Error> {
+        match packet[1] {
             1 => Ok(Get::BatteryCharge),
             2 => Ok(Get::BatteryStatus),
             3 => Ok(Get::BatteryProtection),
@@ -70,7 +87,7 @@ impl TryFrom<Packet> for Get {
 }
 
 impl Get {
-    pub fn to_packet(&self) -> [u8; 2] {
+    pub fn to_packet(&self) -> Packet {
         let code = match self {
             Get::BatteryCharge => 1,
             Get::BatteryStatus => 2,
@@ -80,7 +97,7 @@ impl Get {
             Get::PlatformProfile => 6,
             Get::PlatformProfileChoices => 7,
         };
-        [255, code]
+        pack(1, code, 0)
     }
 }
 
@@ -96,9 +113,10 @@ pub enum Set {
 impl TryFrom<Packet> for Set {
     type Error = Error;
 
-    fn try_from(bytes: Packet) -> Result<Self, Self::Error> {
-        let (code, value) = (bytes[0], bytes[1]);
-        match code {
+    fn try_from(packet: Packet) -> Result<Self, Self::Error> {
+        let value = get_packet_value(packet);
+
+        match packet[1] {
             3 => Ok(Set::BatteryProtection {
                 protection: BatteryProtection::try_from(value)?,
             }),
@@ -117,18 +135,64 @@ impl TryFrom<Packet> for Set {
 }
 
 impl Set {
-    pub fn to_packet(&self) -> [u8; 2] {
-        match self {
-            Set::BatteryProtection { protection } => [3, protection.code()],
-            Set::DisplayBrightness { brightness } => [4, brightness.value()],
-            Set::KeyboardBacklight { backlight } => [5, backlight.value()],
-            Set::PlatformProfile { profile } => [6, profile.code()],
+    pub fn to_packet(&self) -> Packet {
+        let (code, value) = match self {
+            Set::BatteryProtection { protection } => (3, protection.code()),
+            Set::DisplayBrightness { brightness } => (4, brightness.line_value()),
+            Set::KeyboardBacklight { backlight } => (5, backlight.value()),
+            Set::PlatformProfile { profile } => (6, profile.code()),
+        };
+        pack(2, code, value)
+    }
+}
+
+#[derive(Copy, Clone)]
+pub enum Response {
+    Item(Item),
+    Done,
+    Unavailable,
+    MaxClients,
+}
+
+impl TryFrom<Packet> for Response {
+    type Error = Error;
+
+    fn try_from(packet: Packet) -> Result<Self, Self::Error> {
+        match packet[0] {
+            1 => Item::try_from(packet).map(Response::Item),
+            2 => Ok(Response::Done),
+            3 => Ok(Response::Unavailable),
+            4 => Ok(Response::MaxClients),
+            _ => Err(anyhow!("Unknown response code")),
         }
     }
 }
 
+impl Response {
+    pub fn to_packet(&self) -> Packet {
+        match self {
+            Response::Item(item) => item.to_packet(),
+            Response::Done => pack(2, 0, 0),
+            Response::Unavailable => pack(3, 0, 0),
+            Response::MaxClients => pack(4, 0, 0),
+        }
+    }
+}
+
+impl fmt::Display for Response {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Response::Item(item) => item.to_string(),
+            Response::Done => "Done".to_string(),
+            Response::Unavailable => "Requested value is not available".to_string(),
+            Response::MaxClients => "Server max clients limit exceeded".to_string(),
+        };
+        write!(f, "{}", s)
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub enum Message {
+pub enum Item {
     BatteryCharge(Percentage),
     BatteryStatus(BatteryStatus),
     BatteryProtection(BatteryProtection),
@@ -136,155 +200,137 @@ pub enum Message {
     KeyboardBacklight(KeyboardBacklight),
     PlatformProfile(PlatformProfile),
     PlatformProfileChoices(PlatformProfileChoices),
-    Signal(Signal),
 }
 
-impl Message {
-    pub fn to_packet(self) -> Packet {
-        match self {
-            Message::BatteryCharge(charge) => [1, charge.value()],
-            Message::BatteryStatus(status) => [2, status.code()],
-            Message::BatteryProtection(protection) => [3, protection.code()],
-            Message::DisplayBrightness(brightness) => [4, brightness.value()],
-            Message::KeyboardBacklight(backlight) => [5, backlight.value()],
-            Message::PlatformProfile(profile) => [6, profile.code()],
-            Message::PlatformProfileChoices(choices) => [7, choices.list()],
-            Message::Signal(signal) => [255, signal.code()],
+impl TryFrom<Packet> for Item {
+    type Error = Error;
+
+    fn try_from(packet: Packet) -> Result<Self, Self::Error> {
+        let value = get_packet_value(packet);
+
+        match packet[1] {
+            1 => Ok(Item::BatteryCharge(Percentage::from(value))),
+            2 => BatteryStatus::try_from(value).map(Item::BatteryStatus),
+            3 => BatteryProtection::try_from(value).map(Item::BatteryProtection),
+            4 => Ok(Item::DisplayBrightness(Percentage::from(value))),
+            5 => Ok(Item::KeyboardBacklight(KeyboardBacklight::from(value))),
+            6 => PlatformProfile::try_from(value).map(Item::PlatformProfile),
+            7 => Ok(Item::PlatformProfileChoices(PlatformProfileChoices::from(value))),
+            _ => Err(anyhow!("Unknown item code")),
         }
     }
 }
 
-impl fmt::Display for Message {
+impl Item {
+    pub fn to_packet(self) -> Packet {
+        let (code, value) = match self {
+            Item::BatteryCharge(charge) => (1, charge.line_value()),
+            Item::BatteryStatus(status) => (2, status.code()),
+            Item::BatteryProtection(protection) => (3, protection.code()),
+            Item::DisplayBrightness(brightness) => (4, brightness.line_value()),
+            Item::KeyboardBacklight(backlight) => (5, backlight.value()),
+            Item::PlatformProfile(profile) => (6, profile.code()),
+            Item::PlatformProfileChoices(choices) => (7, choices.list()),
+        };
+        pack(1, code, value)
+    }
+}
+
+impl fmt::Display for Item {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Message::BatteryCharge(charge) => format!("battery_charge = {}", charge.value()),
-            Message::BatteryStatus(status) => format!("battery_status = {}", status.as_str()),
-            Message::BatteryProtection(protection) => format!("battery_protection = {}", protection.as_str()),
-            Message::DisplayBrightness(brightness) => format!("display_brightness = {}", brightness),
-            Message::KeyboardBacklight(backlight) => format!("keyboard_backlight = {}", backlight.as_str()),
-            Message::PlatformProfile(profile) => format!("platform_profile = {}", profile.as_str()),
-            Message::PlatformProfileChoices(choices) => format!("platform_profile_choices = {}", choices),
-            Message::Signal(signal) => signal.as_str().to_string(),
+            Item::BatteryCharge(charge) => format!("battery_charge = {}", charge),
+            Item::BatteryStatus(status) => format!("battery_status = {}", status.as_str()),
+            Item::BatteryProtection(protection) => format!("battery_protection = {}", protection.as_str()),
+            Item::DisplayBrightness(brightness) => format!("display_brightness = {}", brightness),
+            Item::KeyboardBacklight(backlight) => format!("keyboard_backlight = {}", backlight.as_str()),
+            Item::PlatformProfile(profile) => format!("platform_profile = {}", profile.as_str()),
+            Item::PlatformProfileChoices(choices) => format!("platform_profile_choices = {}", choices),
         };
         write!(f, "{}", s)
     }
 }
 
-impl TryFrom<Packet> for Message {
-    type Error = Error;
-
-    fn try_from(bytes: Packet) -> Result<Self, Self::Error> {
-        let (code, value) = (bytes[0], bytes[1]);
-        match code {
-            1 => Ok(Message::BatteryCharge(Percentage::from(value))),
-            2 => BatteryStatus::try_from(value).map(Message::BatteryStatus),
-            3 => BatteryProtection::try_from(value).map(Message::BatteryProtection),
-            4 => Ok(Message::DisplayBrightness(Percentage::from(value))),
-            5 => Ok(Message::KeyboardBacklight(KeyboardBacklight::from(value))),
-            6 => PlatformProfile::try_from(value).map(Message::PlatformProfile),
-            7 => Ok(Message::PlatformProfileChoices(PlatformProfileChoices::from(value))),
-            255 => Signal::try_from(value).map(Message::Signal),
-            _ => Err(anyhow!("Unknown message code")),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum Signal {
-    Synced,
-    Unavailable,
-    MaxClients,
-}
-
-impl Signal {
-    pub fn code(self) -> u8 {
-        match self {
-            Signal::Synced => 1,
-            Signal::Unavailable => 2,
-            Signal::MaxClients => 3,
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        match self {
-            Signal::Synced => "Synced",
-            Signal::Unavailable => "Requested value is not available",
-            Signal::MaxClients => "Server max clients limit exceeded",
-        }
-    }
-}
-
-impl TryFrom<u8> for Signal {
-    type Error = Error;
-
-    fn try_from(code: u8) -> Result<Self, Self::Error> {
-        match code {
-            1 => Ok(Signal::Synced),
-            2 => Ok(Signal::Unavailable),
-            3 => Ok(Signal::MaxClients),
-            _ => Err(anyhow!("Unknown signal code")),
-        }
-    }
-}
-
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Percentage {
-    value: u8,
+    value: f32,
 }
 
-impl Add<u8> for Percentage {
+impl Add<f32> for Percentage {
     type Output = Self;
 
-    fn add(mut self, value: u8) -> Self {
-        self.value = self.value.saturating_add(value).min(100);
+    fn add(mut self, value: f32) -> Self {
+        self.value = self.value.add(value).clamp(0.0, Self::MAX);
         self
     }
 }
 
-impl Sub<u8> for Percentage {
+impl Sub<f32> for Percentage {
     type Output = Self;
 
-    fn sub(mut self, value: u8) -> Self {
-        self.value = self.value.saturating_sub(value);
+    fn sub(mut self, value: f32) -> Self {
+        self.value = self.value.sub(value).clamp(0.0, Self::MAX);
         self
     }
 }
 
 impl Percentage {
-    pub fn min(mut self, n: u8) -> Self {
-        self.value = self.value.min(n);
-        self
+    pub const MAX: f32 = 100.0;
+
+    pub fn new(value: f32) -> Self {
+        Self {
+            value: (value.clamp(0.0, Self::MAX) * 100.0).round() / 100.0,
+        }
     }
 
-    pub fn max(mut self, n: u8) -> Self {
-        self.value = self.value.max(n.min(100));
-        self
-    }
-
-    pub fn value(&self) -> u8 {
+    pub fn value(&self) -> f32 {
         self.value
+    }
+
+    pub fn normalized(&self) -> f32 {
+        self.value / Self::MAX
+    }
+
+    pub fn min(mut self, n: f32) -> Self {
+        self.value = self.value.min(n).clamp(0.0, Self::MAX);
+        self
+    }
+
+    pub fn max(mut self, n: f32) -> Self {
+        self.value = self.value.max(n).clamp(0.0, Self::MAX);
+        self
+    }
+
+    pub fn line_value(&self) -> UNum {
+        (self.value * 100.0) as UNum
     }
 }
 
-impl From<u8> for Percentage {
-    fn from(value: u8) -> Self {
-        let value = value.clamp(0, 100);
-        Self { value }
+impl From<UNum> for Percentage {
+    fn from(value: UNum) -> Self {
+        Self {
+            value: value.clamp(0, 10000) as f32 / 100.0,
+        }
+    }
+}
+
+impl From<f32> for Percentage {
+    fn from(value: f32) -> Self {
+        Self::new(value)
     }
 }
 
 impl fmt::Display for Percentage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.value())
+        write!(f, "{:.2}", self.value)
     }
 }
 
-#[cfg(feature = "clap")]
 impl FromStr for Percentage {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from(s.parse::<u8>()?))
+        Ok(Self::from(s.parse::<f32>()?))
     }
 }
 
@@ -295,10 +341,10 @@ pub enum BatteryStatus {
     Discharging,
 }
 
-impl TryFrom<u8> for BatteryStatus {
+impl TryFrom<UNum> for BatteryStatus {
     type Error = Error;
 
-    fn try_from(code: u8) -> Result<Self, Self::Error> {
+    fn try_from(code: UNum) -> Result<Self, Self::Error> {
         match code {
             1 => Ok(BatteryStatus::Inactive),
             2 => Ok(BatteryStatus::Charging),
@@ -317,7 +363,7 @@ impl BatteryStatus {
         }
     }
 
-    pub fn code(&self) -> u8 {
+    pub fn code(&self) -> UNum {
         match self {
             BatteryStatus::Inactive => 1,
             BatteryStatus::Charging => 2,
@@ -346,15 +392,28 @@ pub enum BatteryProtection {
     Stationary,
 }
 
-impl TryFrom<u8> for BatteryProtection {
+impl TryFrom<UNum> for BatteryProtection {
     type Error = Error;
 
-    fn try_from(code: u8) -> Result<Self, Self::Error> {
+    fn try_from(code: UNum) -> Result<Self, Self::Error> {
         match code {
             0 => Ok(BatteryProtection::Off),
             1 => Ok(BatteryProtection::On),
             2 => Ok(BatteryProtection::Stationary),
             _ => Err(anyhow!("Unknow battery protection code")),
+        }
+    }
+}
+
+impl FromStr for BatteryProtection {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "off" => Ok(BatteryProtection::Off),
+            "on" => Ok(BatteryProtection::On),
+            "stationary" => Ok(BatteryProtection::Stationary),
+            _ => Err(anyhow!("Unknow battery protection string")),
         }
     }
 }
@@ -368,7 +427,7 @@ impl BatteryProtection {
         }
     }
 
-    pub fn code(&self) -> u8 {
+    pub fn code(&self) -> UNum {
         match self {
             BatteryProtection::Off => 0,
             BatteryProtection::On => 1,
@@ -404,10 +463,9 @@ impl fmt::Display for BatteryProtection {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Sequence)]
+#[derive(Debug, Copy, Clone, PartialEq, Sequence)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum KeyboardBacklight {
-    #[default]
     Off,
     Low,
     Medium,
@@ -424,7 +482,7 @@ impl KeyboardBacklight {
         }
     }
 
-    pub fn value(&self) -> u8 {
+    pub fn value(&self) -> UNum {
         match self {
             KeyboardBacklight::Off => 0,
             KeyboardBacklight::Low => 1,
@@ -450,13 +508,27 @@ impl KeyboardBacklight {
     }
 }
 
-impl From<u8> for KeyboardBacklight {
-    fn from(value: u8) -> Self {
+impl From<UNum> for KeyboardBacklight {
+    fn from(value: UNum) -> Self {
         match value {
             0 => KeyboardBacklight::Off,
             1 => KeyboardBacklight::Low,
             2 => KeyboardBacklight::Medium,
             _ => KeyboardBacklight::Max,
+        }
+    }
+}
+
+impl FromStr for KeyboardBacklight {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "off" => Ok(KeyboardBacklight::Off),
+            "low" => Ok(KeyboardBacklight::Low),
+            "medium" => Ok(KeyboardBacklight::Medium),
+            "max" => Ok(KeyboardBacklight::Max),
+            _ => Err(anyhow!("Unknow keyboard backlight string")),
         }
     }
 }
@@ -475,7 +547,7 @@ impl fmt::Display for KeyboardBacklight {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct PlatformProfileChoices {
-    list: u8,
+    list: UNum,
 }
 
 impl PlatformProfileChoices {
@@ -484,7 +556,7 @@ impl PlatformProfileChoices {
     }
 
     pub fn last(&self) -> Option<PlatformProfile> {
-        self.first_from(7, true, true)
+        self.first_from(PlatformProfile::CARDINALITY - 1, true, true)
     }
 
     pub fn next(&self, profile: PlatformProfile) -> Option<PlatformProfile> {
@@ -508,8 +580,8 @@ impl PlatformProfileChoices {
     fn first_from(&self, index: usize, inclusive: bool, reverse: bool) -> Option<PlatformProfile> {
         let step = if reverse { -1 } else { 1 };
         let mut index = if inclusive { index as i8 } else { index as i8 + step };
-        while (0..=7).contains(&index) {
-            if self.list & (1u8 << index) > 0 {
+        while (0..(PlatformProfile::CARDINALITY as i8)).contains(&index) {
+            if self.list & ((1 as UNum) << index) > 0 {
                 return all::<PlatformProfile>().nth(index as usize);
             }
             index += step;
@@ -518,20 +590,20 @@ impl PlatformProfileChoices {
     }
 
     pub fn contains(&self, profile: PlatformProfile) -> bool {
-        self.list & (1u8 << profile.index()) > 0
+        self.list & ((1 as UNum) << profile.index()) > 0
     }
 
     pub fn count(&self) -> usize {
         let mut count = 0;
-        for i in 0..8 {
-            if self.list & (1u8 << i) > 0 {
+        for i in 0..PlatformProfile::CARDINALITY {
+            if self.list & ((1 as UNum) << i) > 0 {
                 count += 1;
             }
         }
         count
     }
 
-    fn list(&self) -> u8 {
+    fn list(&self) -> UNum {
         self.list
     }
 }
@@ -540,9 +612,9 @@ impl fmt::Display for PlatformProfileChoices {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
         write!(f, "[")?;
-        for i in 0u8..8 {
-            if self.list & (1u8 << i) > 0
-                && let Result::Ok(profile) = PlatformProfile::try_from(i + 1)
+        for i in 0..PlatformProfile::CARDINALITY {
+            if self.list & ((1 as UNum) << i) > 0
+                && let Result::Ok(profile) = PlatformProfile::try_from((i as UNum) + 1)
             {
                 if first {
                     first = false;
@@ -556,19 +628,18 @@ impl fmt::Display for PlatformProfileChoices {
     }
 }
 
-impl From<u8> for PlatformProfileChoices {
-    fn from(list: u8) -> Self {
+impl From<UNum> for PlatformProfileChoices {
+    fn from(list: UNum) -> Self {
         Self { list }
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Sequence)]
+#[derive(Debug, Copy, Clone, PartialEq, Sequence)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum PlatformProfile {
     LowPower,
     Cool,
     Quiet,
-    #[default]
     Balanced,
     BalancedPerformance,
     Performance,
@@ -576,14 +647,32 @@ pub enum PlatformProfile {
     Custom,
 }
 
-impl TryFrom<u8> for PlatformProfile {
+impl TryFrom<UNum> for PlatformProfile {
     type Error = Error;
 
-    fn try_from(code: u8) -> Result<Self, Self::Error> {
+    fn try_from(code: UNum) -> Result<Self, Self::Error> {
         if let Some(profile) = all::<PlatformProfile>().nth((code - 1) as usize) {
             Ok(profile)
         } else {
             Err(anyhow!("Unknown platform profile code"))
+        }
+    }
+}
+
+impl FromStr for PlatformProfile {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "low-power" => Ok(PlatformProfile::LowPower),
+            "cool" => Ok(PlatformProfile::Cool),
+            "quiet" => Ok(PlatformProfile::Quiet),
+            "balanced" => Ok(PlatformProfile::Balanced),
+            "balanced-performance" => Ok(PlatformProfile::BalancedPerformance),
+            "performance" => Ok(PlatformProfile::Performance),
+            "max-power" => Ok(PlatformProfile::MaxPower),
+            "custom" => Ok(PlatformProfile::Custom),
+            _ => Err(anyhow!("Unknow platform profile string")),
         }
     }
 }
@@ -606,8 +695,8 @@ impl PlatformProfile {
         all::<PlatformProfile>().position(|i| i == *self).unwrap()
     }
 
-    pub fn code(&self) -> u8 {
-        self.index() as u8 + 1
+    pub fn code(&self) -> UNum {
+        self.index() as UNum + 1
     }
 }
 

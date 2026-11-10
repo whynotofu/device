@@ -28,8 +28,8 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let mut ipc = Ipc::new()?;
 
-    if let Some(message) = ipc.request(args.request)? {
-        println!("{}", message);
+    if let Some(response) = ipc.request(args.request)? {
+        println!("{}", response);
     }
 
     Ok(())

@@ -35,19 +35,7 @@ Location: `/etc/device.toml`
 | --- | --- | --- | --- |
 | keyboard_backlight | If not set, first `{name}::kbd_backlight` encountered in `/sys/class/leds/` will be used. | String | |
 | battery_polling_interval | 5, 10, 15, 20, 30 or 60 seconds. | Integer | 10 |
-
-### Static Config Section
-
-| Option | Description | Type | Default |
-| --- | --- | --- | --- |
 | intel_turbo | Enable/Disable Intel turbo. | Boolean | true |
-
-Example:
-
-```
-[static_config]
-intel_turbo = false
-```
 
 ## Install
 

@@ -1,10 +1,7 @@
 use crate::stack_string::StackString;
 use device_common::Packet;
 use libc::*;
-use std::mem;
-use std::mem::size_of;
-use std::ptr::null_mut;
-use std::time::Duration;
+use std::{ffi::CStr, mem, mem::size_of, ptr::null_mut, time::Duration};
 
 pub type ResourceID = libc::c_int;
 
@@ -104,7 +101,7 @@ impl NetlinkSocket {
     pub fn new() -> Self {
         let fd = unsafe { socket(AF_NETLINK, SOCK_RAW, NETLINK_KOBJECT_UEVENT) };
         wrappers_assert!(fd >= 0, "NetlinkSocket::new {}", "socket");
-        let mut socket_addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        let mut socket_addr: libc::sockaddr_nl = unsafe { mem::zeroed() };
         socket_addr.nl_family = AF_NETLINK as sa_family_t;
         socket_addr.nl_pid = 0;
         socket_addr.nl_groups = 1;
@@ -133,6 +130,20 @@ impl File {
         unsafe { access(file.as_str().as_bytes().as_ptr() as *const c_char, F_OK) == 0 }
     }
 
+    pub fn is_file(path: &FilePath) -> bool {
+        let mut stat_buf: stat = unsafe { mem::zeroed() };
+        let res = unsafe { stat(path.as_str().as_bytes().as_ptr() as *const c_char, &mut stat_buf) };
+        wrappers_assert!(res == 0, "File::is_file");
+        (stat_buf.st_mode & S_IFMT) == S_IFREG
+    }
+
+    pub fn size(file: &FilePath) -> usize {
+        let mut buffer: libc::stat = unsafe { mem::zeroed() };
+        let res = unsafe { stat(file.as_str().as_bytes().as_ptr() as *const c_char, &mut buffer) };
+        wrappers_assert!(res == 0, "File::size");
+        buffer.st_size as usize
+    }
+
     pub fn delete(file: &FilePath) {
         let res = unsafe { unlink(file.as_str().as_bytes().as_ptr() as *const c_char) };
         wrappers_assert!(res == 0, "File::delete");
@@ -156,6 +167,11 @@ impl File {
         wrappers_assert!(res >= 0, "File.seek");
     }
 
+    pub fn trim(&self, length: u64) {
+        let res = unsafe { ftruncate(self.fd, length as off_t) };
+        wrappers_assert!(res >= 0, "File.trim");
+    }
+
     pub fn read(&self, bytes: &mut [u8]) -> usize {
         read(self.fd, bytes)
     }
@@ -166,6 +182,40 @@ impl File {
 
     pub fn close(&self) {
         close(self.fd);
+    }
+}
+
+pub struct Directory {
+    dir: *mut DIR,
+}
+
+impl Directory {
+    pub fn open(path: &str) -> Self {
+        let dir = unsafe { opendir(FilePath::from(path).as_str().as_bytes().as_ptr() as *const c_char) };
+        wrappers_assert!(dir.is_null() == false, "Directory::open");
+        Self { dir }
+    }
+
+    pub fn get_entry(&self) -> Option<&str> {
+        loop {
+            let entry = unsafe { readdir(self.dir) };
+            if !entry.is_null() {
+                if let Ok(entry) = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_str()
+                    && ![".", ".."].contains(&entry)
+                {
+                    return Some(entry);
+                }
+            } else {
+                return None;
+            }
+        }
+    }
+}
+
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let res = unsafe { closedir(self.dir) };
+        wrappers_assert!(res == 0, "Directory.drop");
     }
 }
 
@@ -324,7 +374,7 @@ pub fn setup_signal_handler() -> ResourceID {
 
 pub fn process_signal(signal_fd: ResourceID) -> bool {
     let mut si: signalfd_siginfo = unsafe { mem::zeroed() };
-    let size = mem::size_of::<signalfd_siginfo>();
+    let size = size_of::<signalfd_siginfo>();
     let count = unsafe { libc::read(signal_fd, &mut si as *mut _ as *mut c_void, size) };
     wrappers_assert!(count == size as isize, "process_signal");
     !(si.ssi_signo as c_int == SIGINT || si.ssi_signo as c_int == SIGTERM)
